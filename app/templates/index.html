@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arquivo.pt Log Analysis</title>
+  <link rel="icon" href="https://arquivo.pt/img/Favicon.ico" type="image/x-icon">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --arq-dark:    #033f72;
+      --arq-blue:    #1c75c0;
+      --arq-blue-d:  #00101e;
+      --arq-bg:      #f5f5f5;
+      --arq-text:    #222;
+      --arq-muted:   #666;
+      --arq-border:  #e3e6ea;
+    }
+    html, body { background: var(--arq-bg); color: var(--arq-text);
+                 font-family: Roboto, Arial, Helvetica, sans-serif;
+                 -webkit-font-smoothing: subpixel-antialiased; }
+
+    /* Header — mirrors arquivo.pt: fixed dark-blue bar + white "curve" strip */
+    .arq-header { background: var(--arq-dark); color: #fff;
+                  padding: 10px 0 6px 0; box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+    .arq-header a { color: #fff; text-decoration: none; }
+    .arq-header a:hover { color: #fff; opacity: .85; }
+    .arq-logo { height: 34px; }
+    .arq-brand-sub { color: #ffffffd9; font-size: .95rem; letter-spacing: .02em; }
+    .arq-top-curve { height: 6px; background: #fff;
+                     border-top-left-radius: 10px; border-top-right-radius: 10px;
+                     margin-top: 4px; position: relative; z-index: 1; }
+
+    /* Buttons (arquivo.pt-style) */
+    .btn-arq { background: var(--arq-blue); color: #fff; border: 1px solid var(--arq-blue);
+               border-radius: 4px; padding: 5px 12px; font-size: .85rem; }
+    .btn-arq:hover { background: #fff; color: var(--arq-blue); border-color: var(--arq-blue); }
+    .btn-arq:active { background: var(--arq-blue-d); color: #fff; border-color: var(--arq-blue-d); }
+    .btn-arq-ghost { background: transparent; color: #fff; border: 1px solid #ffffff80;
+                     border-radius: 4px; padding: 4px 10px; font-size: .8rem; }
+    .btn-arq-ghost:hover { background: #fff; color: var(--arq-blue); border-color: #fff; }
+    .btn-arq-ghost.active { background: #fff; color: var(--arq-blue); border-color: #fff; }
+
+    /* Cards / chart boxes */
+    .card { border: 1px solid var(--arq-border); border-radius: 6px; }
+    .card-header { background: #fafbfc; border-bottom: 1px solid var(--arq-border);
+                   color: var(--arq-dark); font-weight: 600; }
+    .chart-box { background: #fff; border: 1px solid var(--arq-border); border-radius: 6px;
+                 padding: 1.2rem; box-shadow: 0 1px 3px rgba(3,63,114,.05); }
+    .chart-box h6 { color: var(--arq-dark); }
+
+    /* Stat summary cards */
+    .stat-card { border-left: 4px solid; background: #fff; }
+    .stat-card.requests { border-color: var(--arq-blue); }
+    .stat-card.ips      { border-color: #198754; }
+    .stat-card.bytes    { border-color: #e68a00; }
+    .stat-card.rt       { border-color: var(--arq-dark); }
+    .stat-card .fs-3 { color: var(--arq-dark); }
+
+    /* Tables */
+    .table thead th { background: #f1f4f8; color: var(--arq-dark); font-weight: 600;
+                      border-bottom: 2px solid var(--arq-border); }
+    .table tbody tr:hover { background: #f6faff; }
+
+    /* Drill + links */
+    a { color: var(--arq-blue); }
+    a:hover { color: var(--arq-dark); }
+    .drill-link { color: var(--arq-blue); cursor: pointer; text-decoration: underline dotted; }
+    .drill-link:hover { color: var(--arq-dark); }
+
+    /* Form controls */
+    .form-control:focus, .form-select:focus {
+      border-color: var(--arq-blue); box-shadow: 0 0 0 .2rem rgba(28,117,192,.2);
+    }
+
+    /* Loading overlay */
+    #loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,.96); z-index: 9999;
+                       display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    #loading-overlay .spinner-border { color: var(--arq-blue) !important; }
+    #loading-overlay h5 { color: var(--arq-dark); }
+    .progress-bar { background-color: var(--arq-blue) !important; }
+
+    /* Live badge */
+    #live-badge { font-size: .7rem; vertical-align: middle; background: #198754 !important; }
+
+    /* Parsing banner */
+    #parsing-banner { display: none; background: #1c75c0; color: #fff;
+                      padding: 6px 16px; font-size: .82rem; align-items: center; gap: 10px; }
+    #parsing-banner .spinner-border { width: 1rem; height: 1rem; border-width: 2px; }
+
+    /* Logs panel */
+    #logs-panel pre { background: #0b1b2b; color: #d4d4d4; border-radius: 4px;
+                      padding: .8rem; font-size: .78rem; max-height: 400px; overflow: auto;
+                      white-space: pre-wrap; word-break: break-all; margin: 0;
+                      border: 1px solid #0a2439; }
+    #logs-panel .log-INFO  { color: #9cdcfe; }
+    #logs-panel .log-WARN,
+    #logs-panel .log-WARNING { color: #dcdcaa; }
+    #logs-panel .log-ERROR { color: #f48771; }
+    #logs-panel .log-DEBUG { color: #808080; }
+
+    #path-search { max-width: 320px; }
+    .flag { font-family: "Segoe UI Emoji", "Apple Color Emoji", sans-serif; margin-right: .35rem; }
+
+    /* Footer — arquivo.pt dark-blue band */
+    .arq-footer { background: var(--arq-dark); color: #ffffffc4; padding: 28px 0 22px;
+                  margin-top: 3rem; font-size: .85rem; }
+    .arq-footer a { color: #ffffffc4; text-decoration: none; }
+    .arq-footer a:hover { color: #fff; text-decoration: underline; }
+    .arq-footer .brand { color: #fff; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="text-center">
+    <div class="spinner-border text-primary mb-3" style="width:3rem;height:3rem"></div>
+    <h5 id="loading-msg">Initialising…</h5>
+    <div class="progress mt-3" style="width:320px">
+      <div id="loading-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%"></div>
+    </div>
+  </div>
+</div>
+
+<div id="main" style="display:none">
+  <div id="parsing-banner">
+    <div class="spinner-border text-white" role="status"></div>
+    <span id="parsing-banner-msg">Re-parsing logs…</span>
+  </div>
+  <header class="arq-header" id="arq-header">
+    <div class="container-fluid px-4 d-flex flex-wrap align-items-center gap-3">
+      <a href="https://arquivo.pt/" target="_blank" rel="noopener" class="d-flex align-items-center gap-3">
+        <img src="https://arquivo.pt/img/arquivo-logo-white.svg" alt="Arquivo.pt" class="arq-logo">
+      </a>
+      <span class="arq-brand-sub">Log Analysis
+        <span id="live-badge" class="badge ms-2">LIVE</span>
+      </span>
+      <div class="ms-auto d-flex flex-wrap align-items-center gap-3">
+        <div class="btn-group btn-group-sm" role="group">
+          <button class="btn btn-arq-ghost category-tab active" data-cat="all">All</button>
+          <button class="btn btn-arq-ghost category-tab" data-cat="human">Human</button>
+          <button class="btn btn-arq-ghost category-tab" data-cat="bot">Bots</button>
+        </div>
+        <div class="d-flex align-items-center gap-1 flex-wrap">
+          <div id="year-btns" class="btn-group btn-group-sm me-1" role="group"></div>
+          <div id="month-btns" class="btn-group btn-group-sm me-1" role="group" style="display:none"></div>
+          <a id="yearly-download-btn" href="#" class="btn-arq-ghost" title="Download annual PDF report" style="display:none" onclick="downloadYearlyPdf(event)">&#8681; PDF</a>
+          <input type="date" id="from-date" class="form-control form-control-sm" style="width:140px" oninput="validateDateRange()">
+          <span class="text-light">→</span>
+          <input type="date" id="to-date"   class="form-control form-control-sm" style="width:140px" oninput="validateDateRange()">
+          <button class="btn-arq" onclick="applyDateRange()">Apply</button>
+          <span id="date-range-error" class="text-warning fw-semibold" style="display:none;font-size:.8rem">⚠ from must be before to</span>
+        </div>
+        <small class="text-light" id="nav-window"></small>
+        <small class="text-light" id="nav-updated"></small>
+        <button class="btn-arq-ghost" onclick="refresh()">↺ Re-parse</button>
+      </div>
+    </div>
+    <div class="arq-top-curve"></div>
+  </header>
+
+  <div class="container-fluid py-4 px-4">
+
+    <!-- Summary cards -->
+    <div class="row g-3 mb-4">
+      <div class="col-sm-6 col-xl-3"><div class="card stat-card requests h-100"><div class="card-body">
+        <div class="text-muted small">Total Requests</div><div class="fs-3 fw-bold" id="s-total">—</div>
+      </div></div></div>
+      <div class="col-sm-6 col-xl-3"><div class="card stat-card ips h-100"><div class="card-body">
+        <div class="text-muted small">Unique IPs</div><div class="fs-3 fw-bold" id="s-ips">—</div>
+      </div></div></div>
+      <div class="col-sm-6 col-xl-3"><div class="card stat-card bytes h-100"><div class="card-body">
+        <div class="text-muted small">Total Transferred</div><div class="fs-3 fw-bold" id="s-bytes">—</div>
+      </div></div></div>
+      <div class="col-sm-6 col-xl-3"><div class="card stat-card rt h-100"><div class="card-body">
+        <div class="text-muted small">Avg Response Time</div><div class="fs-3 fw-bold" id="s-rt">—</div>
+      </div></div></div>
+    </div>
+
+    <!-- Charts row 1 -->
+    <div class="row g-3 mb-4">
+      <div class="col-lg-8"><div class="chart-box h-100">
+        <h6 class="fw-semibold mb-3">Daily Traffic</h6><canvas id="chart-daily" height="110"></canvas>
+      </div></div>
+      <div class="col-lg-4"><div class="chart-box h-100">
+        <h6 class="fw-semibold mb-3">HTTP Status Codes</h6><canvas id="chart-status" height="180"></canvas>
+      </div></div>
+    </div>
+
+    <div class="row g-3 mb-4">
+      <div class="col-lg-4"><div class="chart-box h-100">
+        <h6 class="fw-semibold mb-3">HTTP Methods</h6><canvas id="chart-methods" height="180"></canvas>
+      </div></div>
+      <div class="col-lg-8"><div class="chart-box h-100">
+        <h6 class="fw-semibold mb-3">Top 10 Locations</h6><canvas id="chart-paths" height="200"></canvas>
+      </div></div>
+    </div>
+
+    <!-- Countries + Cities (only if GeoIP available) -->
+    <div id="geo-row" style="display:none">
+      <div class="row g-3 mb-4">
+        <div class="col-12"><div class="chart-box">
+          <h6 class="fw-semibold mb-3">Top Countries</h6><canvas id="chart-countries" height="100"></canvas>
+        </div></div>
+      </div>
+      <div class="row g-3 mb-4">
+        <div class="col-12"><div class="chart-box">
+          <h6 class="fw-semibold mb-3">Top Cities <small class="text-muted fw-normal">(click a row to see IPs from that country)</small></h6>
+          <table class="table table-sm table-hover mb-0" id="tbl-cities">
+            <thead class="table-light"><tr><th>City</th><th>Country</th><th>Requests</th><th>Top IPs (this country)</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- Top 10 -->
+    <div class="card mb-4">
+      <div class="card-header fw-semibold">Top 10 Locations (click to drill down)</div>
+      <div class="card-body p-0"><table class="table table-sm table-hover mb-0" id="tbl-top-paths">
+        <thead class="table-light"><tr><th>#</th><th>Path</th><th>Requests</th><th>% of Total</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+
+    <!-- All paths -->
+    <div class="card mb-4">
+      <div class="card-header fw-semibold d-flex align-items-center gap-3">
+        <span>All Locations <small class="text-muted fw-normal" id="path-count"></small></span>
+        <input id="path-search" type="search" class="form-control form-control-sm" placeholder="Filter paths…">
+      </div>
+      <div class="card-body p-0"><table class="table table-sm table-hover mb-0" id="tbl-all-paths">
+        <thead class="table-light"><tr><th>#</th><th>Path</th><th>Requests</th><th>% of Total</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="p-2 text-center">
+        <button class="btn btn-sm btn-outline-secondary" id="btn-more" onclick="showMorePaths()">Show more</button>
+      </div></div>
+    </div>
+
+    <!-- IPs + Referers -->
+    <div class="row g-3 mb-4">
+      <div class="col-lg-6"><div class="card h-100">
+        <div class="card-header fw-semibold">Top 50 IPs (click to drill down)</div>
+        <div class="card-body p-0" style="max-height:450px;overflow-y:auto">
+          <table class="table table-sm table-hover mb-0" id="tbl-ips">
+            <thead class="table-light"><tr><th>#</th><th>IP Address</th><th>Country</th><th>Requests</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div></div>
+      <div class="col-lg-6"><div class="card h-100">
+        <div class="card-header fw-semibold">Top Referers</div>
+        <div class="card-body p-0" style="max-height:450px;overflow-y:auto">
+          <table class="table table-sm table-hover mb-0" id="tbl-referers">
+            <thead class="table-light"><tr><th>#</th><th>Referer</th><th>Requests</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- UA -->
+    <div class="card mb-4">
+      <div class="card-header fw-semibold">Top User Agents</div>
+      <div class="card-body p-0"><table class="table table-sm table-hover mb-0" id="tbl-ua">
+        <thead class="table-light"><tr><th>#</th><th>User Agent</th><th>Requests</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+
+    <!-- Logs panel -->
+    <div class="card mb-4" id="logs-panel">
+      <div class="card-header fw-semibold d-flex align-items-center gap-3">
+        <span>Application Logs</span>
+        <select id="log-level" class="form-select form-select-sm" style="width:120px">
+          <option value="">All levels</option>
+          <option value="DEBUG">DEBUG</option>
+          <option value="INFO">INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" id="log-autoscroll" checked>
+          <label class="form-check-label small" for="log-autoscroll">Auto-scroll</label>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="refreshLogs()">↺ Reload</button>
+      </div>
+      <div class="card-body p-2"><pre id="logs-pre">Loading…</pre></div>
+    </div>
+
+    <!-- Skipped files -->
+    <div class="card mb-4" id="skipped-card" style="display:none">
+      <div class="card-header fw-semibold text-muted">Files outside window (skipped)</div>
+      <div class="card-body p-2"><small class="text-muted" id="skipped-list"></small></div>
+    </div>
+
+    <div class="text-muted small mb-4" id="meta-footer"></div>
+
+  </div>
+
+  <footer class="arq-footer">
+    <div class="container-fluid px-4 d-flex flex-wrap justify-content-between gap-3">
+      <div>
+        <span class="brand">Arquivo.pt</span> Log Analysis —
+        internal dashboard for Apache access log analytics.
+      </div>
+      <div>
+        <a href="https://arquivo.pt/" target="_blank" rel="noopener">arquivo.pt</a>
+        &nbsp;·&nbsp;
+        <a href="https://sobre.arquivo.pt/" target="_blank" rel="noopener">About</a>
+      </div>
+    </div>
+  </footer>
+</div>
+
+<!-- Drill-down modal -->
+<div class="modal fade" id="drill-modal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="drill-title">Drill-down</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="drill-body">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+const COLORS = ['#1c75c0','#033f72','#198754','#e68a00','#6f42c1','#20c997',
+                '#0dcaf0','#ffc107','#d63384','#6c757d'];
+let _charts = {};
+let _stats = null;
+let _pathPage = 50;
+let _lastUpdated = null;
+let _category = 'all';
+let _livePollStarted = false;
+let _selectedYear = null;
+let _availableYears = [];
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+function fmtNum(n)  { return (n||0).toLocaleString(); }
+function fmtBytes(b) {
+  if (b >= 1e12) return (b/1e12).toFixed(2)+' TB';
+  if (b >= 1e9)  return (b/1e9).toFixed(2)+' GB';
+  if (b >= 1e6)  return (b/1e6).toFixed(2)+' MB';
+  if (b >= 1e3)  return (b/1e3).toFixed(2)+' KB';
+  return (b||0)+' B';
+}
+function fmtPct(n,t) { return t ? ((n/t)*100).toFixed(1)+'%' : '—'; }
+function esc(s) { return (s||'').toString().replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function flag(cc) {
+  if (!cc || cc.length !== 2) return '';
+  const A = 0x1F1E6, a = 'A'.charCodeAt(0);
+  return `<span class="flag">${String.fromCodePoint(A+cc.charCodeAt(0)-a)}${String.fromCodePoint(A+cc.charCodeAt(1)-a)}</span>`;
+}
+
+// ── Polling ──────────────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    document.getElementById('loading-msg').textContent = s.message || 'Parsing…';
+    document.getElementById('loading-bar').style.width = (s.progress||0)+'%';
+
+    if (s.status === 'parsing') {
+      showParsing(s.message);
+      // Load whatever is already in the DB — don't wait for parsing to finish
+      if (_stats === null) await loadStats();
+      setTimeout(poll, 1500);
+    } else if (s.status === 'done') {
+      hideParsing();
+      if (s.last_updated !== _lastUpdated) {
+        _lastUpdated = s.last_updated;
+        await loadStats();
+        if (!_livePollStarted) startLivePoll();
+        else flashLiveBadge();
+      }
+    } else if (s.status === 'error') {
+      hideParsing();
+      document.getElementById('loading-msg').textContent = '❌ ' + s.message;
+    } else {
+      hideParsing();
+      setTimeout(poll, 1500);
+    }
+  } catch (e) { setTimeout(poll, 3000); }
+}
+function showParsing(msg) {
+  document.getElementById('parsing-banner-msg').textContent = msg || 'Re-parsing logs…';
+  document.getElementById('parsing-banner').style.display = 'flex';
+}
+function hideParsing() {
+  document.getElementById('parsing-banner').style.display = 'none';
+}
+function startLivePoll() {
+  _livePollStarted = true;
+  setInterval(async () => {
+    try {
+      const r = await fetch('/api/status');
+      const s = await r.json();
+      if (s.status === 'parsing') { showParsing(s.message); poll(); }
+      else {
+        hideParsing();
+        if (s.status === 'done' && s.last_updated !== _lastUpdated) {
+          _lastUpdated = s.last_updated;
+          await loadStats();
+          flashLiveBadge();
+        }
+      }
+    } catch (_) {}
+  }, 10000);
+  setInterval(refreshLogs, 5000);
+}
+function flashLiveBadge() {
+  const b = document.getElementById('live-badge');
+  b.classList.replace('bg-success','bg-warning'); b.textContent='UPDATED';
+  setTimeout(() => { b.classList.replace('bg-warning','bg-success'); b.textContent='LIVE'; }, 3000);
+  document.getElementById('nav-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+async function loadStats(fromDate, toDate) {
+  let url = '/api/stats?category=' + _category;
+  if (fromDate && toDate) url += `&from_date=${fromDate}&to_date=${toDate}`;
+  const [statsRes, yearsRes] = await Promise.all([
+    fetch(url),
+    fetch('/api/years?category=' + _category),
+  ]);
+  if (!statsRes.ok) return;
+  _stats = await statsRes.json();
+  if (yearsRes.ok) {
+    const yd = await yearsRes.json();
+    _availableYears = yd.years || [];
+  }
+  render(_stats);
+  document.getElementById('loading-overlay').style.display = 'none';
+  document.getElementById('main').style.display = 'block';
+  refreshLogs();
+}
+
+// ── Rendering ────────────────────────────────────────────────────────────────
+function mkChart(id, type, labels, datasets, options) {
+  if (_charts[id]) _charts[id].destroy();
+  _charts[id] = new Chart(document.getElementById(id), { type, data:{labels,datasets}, options });
+}
+
+function render(d) {
+  document.getElementById('s-total').textContent = fmtNum(d.total_requests);
+  document.getElementById('s-ips').textContent   = fmtNum(d.unique_ips);
+  document.getElementById('s-bytes').textContent = fmtBytes(d.bytes_total);
+  document.getElementById('s-rt').textContent    = d.avg_response_time_us
+    ? (d.avg_response_time_us/1000).toFixed(1)+' ms' : 'N/A';
+  document.getElementById('nav-window').textContent =
+    `${d.from_date} → ${d.to_date}`;
+  document.getElementById('from-date').value = d.from_date;
+  document.getElementById('to-date').value   = d.to_date;
+  populateYearButtons(d.from_date, d.to_date);
+
+  document.getElementById('meta-footer').textContent =
+    `Parsed ${d.files_parsed.length} file(s) in ${d.parse_duration_s}s using ${d.workers_used} worker(s).`
+    + (d.geo_available ? ' GeoIP: enabled.' : ' GeoIP: disabled.');
+
+  // Charts
+  mkChart('chart-daily', 'line',
+    d.daily.map(x=>x[0]),
+    [{ label:'Requests', data:d.daily.map(x=>x[1]), fill:true, tension:.3,
+       borderColor:'#1c75c0', backgroundColor:'rgba(28,117,192,.12)', pointRadius:2 }],
+    { plugins:{legend:{display:false}}, scales:{x:{ticks:{maxTicksLimit:15}}} });
+
+  mkChart('chart-status', 'doughnut',
+    d.status_codes.map(x=>x[0]),
+    [{ data:d.status_codes.map(x=>x[1]), backgroundColor:COLORS }],
+    { plugins:{legend:{position:'right'}} });
+
+  mkChart('chart-methods', 'doughnut',
+    d.methods.map(x=>x[0]),
+    [{ data:d.methods.map(x=>x[1]), backgroundColor:COLORS }],
+    { plugins:{legend:{position:'right'}} });
+
+  mkChart('chart-paths', 'bar',
+    d.top_paths.map(x => x[0].length>45 ? x[0].slice(0,42)+'…' : x[0]),
+    [{ label:'Requests', data:d.top_paths.map(x=>x[1]), backgroundColor:COLORS }],
+    { indexAxis:'y', plugins:{legend:{display:false}}, scales:{x:{beginAtZero:true}} });
+
+  // Countries
+  if (d.geo_available && d.top_countries && d.top_countries.length) {
+    document.getElementById('geo-row').style.display = '';
+    const tc = d.top_countries.slice(0,15);
+    mkChart('chart-countries', 'bar',
+      tc.map(x => `${x[1]}`),
+      [{ label:'Requests', data:tc.map(x=>x[2]), backgroundColor:COLORS }],
+      { indexAxis:'y', plugins:{legend:{display:false}}, scales:{x:{beginAtZero:true}} });
+
+    const tbody = document.querySelector('#tbl-cities tbody');
+    tbody.innerHTML = d.top_cities.map(x => {
+      const cc = x[1], city = x[0], reqs = x[2];
+      const previewIps = d.top_ips.filter(ip => ip[2] === cc).slice(0, 3)
+        .map(ip => `<span class="drill-link" onclick="drillIp('${esc(ip[0])}')">${esc(ip[0])}</span>`)
+        .join(', ') || '<span class="text-muted">—</span>';
+      return `<tr style="cursor:pointer" onclick="drillCountryIps('${esc(cc)}','${esc(city)}')">
+        <td>${flag(cc)}${esc(city)}</td>
+        <td>${esc(cc)}</td>
+        <td>${fmtNum(reqs)}</td>
+        <td onclick="event.stopPropagation()">${previewIps}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    document.getElementById('geo-row').style.display = 'none';
+  }
+
+  // Top paths table (clickable)
+  fillTable('tbl-top-paths', d.top_paths.map((x,i) =>
+    [i+1,
+     `<span class="drill-link" onclick="drillPath('${esc(x[0]).replace(/'/g,"\\'")}')">${esc(x[0])}</span>`,
+     fmtNum(x[1]), fmtPct(x[1], d.total_requests)]), true);
+
+  _pathPage = 50;
+  renderPathTable();
+  document.getElementById('path-count').textContent = `(${d.all_paths.length} shown of top 1000)`;
+
+  // IPs with country + drill link
+  fillTable('tbl-ips', d.top_ips.map((x,i) => [
+    i+1,
+    `<span class="drill-link" onclick="drillIp('${esc(x[0])}')">${esc(x[0])}</span>`,
+    x[2] ? flag(x[2])+esc(x[3]||x[2]) : '<span class="text-muted">—</span>',
+    fmtNum(x[1]),
+  ]), true);
+
+  fillTable('tbl-referers', d.top_referers.map((x,i) => [i+1, esc(x[0]), fmtNum(x[1])]), true);
+  fillTable('tbl-ua',       d.top_user_agents.map((x,i) => [i+1, esc(x[0]), fmtNum(x[1])]), true);
+
+  if (d.files_skipped && d.files_skipped.length) {
+    document.getElementById('skipped-card').style.display = '';
+    document.getElementById('skipped-list').textContent = d.files_skipped.join(', ');
+  }
+}
+
+function renderPathTable() {
+  const filter = document.getElementById('path-search').value.toLowerCase();
+  const paths = _stats.all_paths.filter(x => x[0].toLowerCase().includes(filter));
+  fillTable('tbl-all-paths',
+    paths.slice(0, _pathPage).map((x,i) =>
+      [i+1,
+       `<span class="drill-link" onclick="drillPath('${esc(x[0]).replace(/'/g,"\\'")}')">${esc(x[0])}</span>`,
+       fmtNum(x[1]), fmtPct(x[1], _stats.total_requests)]), true);
+  document.getElementById('btn-more').style.display = _pathPage < paths.length ? '' : 'none';
+}
+
+function showMorePaths() { _pathPage += 50; renderPathTable(); }
+
+function fillTable(id, rows, raw=false) {
+  document.getElementById(id).querySelector('tbody').innerHTML =
+    rows.map(r => `<tr>${r.map((c,i) =>
+      raw ? `<td${i===1?' style="word-break:break-all"':''}>${c}</td>`
+          : `<td${i===1?' style="word-break:break-all"':''}>${esc(c)}</td>`
+    ).join('')}</tr>`).join('');
+}
+
+// ── Drill-down ───────────────────────────────────────────────────────────────
+async function drillIp(ip) {
+  showDrillModal('IP: '+ip, 'Loading…');
+  const r = await fetch('/api/drill/ip?ip=' + encodeURIComponent(ip));
+  const d = await r.json();
+  if (!d.paths || d.paths.length === 0) {
+    showDrillModal('IP: '+esc(ip),
+      '<p class="text-muted">No drill-down available for this IP (only top-200 retained).</p>');
+    return;
+  }
+  const geoLine = d.geo && d.geo.country
+    ? `${flag(d.geo.country_code)}${esc(d.geo.country)}${d.geo.city?' · '+esc(d.geo.city):''}`
+    : '<span class="text-muted">No geo info</span>';
+  const rows = d.paths.map(([p,n]) =>
+    `<tr><td style="word-break:break-all">${esc(p)}</td><td>${fmtNum(n)}</td></tr>`).join('');
+  showDrillModal(`IP: ${esc(ip)}`, `
+    <div class="mb-2">${geoLine} · <strong>${fmtNum(d.total_requests)}</strong> requests</div>
+    <table class="table table-sm">
+      <thead><tr><th>Path</th><th>Requests</th></tr></thead><tbody>${rows}</tbody>
+    </table>`);
+}
+async function drillPath(path) {
+  showDrillModal('Path: '+esc(path), 'Loading…');
+  const r = await fetch('/api/drill/path?path=' + encodeURIComponent(path));
+  const d = await r.json();
+  if (!d.ips || d.ips.length === 0) {
+    showDrillModal('Path: '+esc(path),
+      '<p class="text-muted">No drill-down available (only top-200 retained).</p>');
+    return;
+  }
+  const rows = d.ips.map(x =>
+    `<tr><td>${esc(x[0])}</td>
+         <td>${x[2]?flag(x[2])+esc(x[3]||x[2]):'<span class="text-muted">—</span>'}</td>
+         <td>${fmtNum(x[1])}</td></tr>`).join('');
+  showDrillModal(`Path: ${esc(path)}`, `
+    <div class="mb-2"><strong>${fmtNum(d.total_requests)}</strong> requests</div>
+    <table class="table table-sm">
+      <thead><tr><th>IP</th><th>Country</th><th>Requests</th></tr></thead>
+      <tbody>${rows}</tbody></table>`);
+}
+function showDrillModal(title, html) {
+  document.getElementById('drill-title').textContent = title;
+  document.getElementById('drill-body').innerHTML = html;
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('drill-modal')).show();
+}
+function drillCountryIps(cc, city) {
+  const ips = _stats.top_ips.filter(x => x[2] === cc);
+  if (!ips.length) {
+    showDrillModal(`${esc(city)} (${esc(cc)})`,
+      '<p class="text-muted">No IPs available for this country in the current window.</p>');
+    return;
+  }
+  const rows = ips.map((x, i) =>
+    `<tr><td>${i+1}</td>
+     <td><span class="drill-link" onclick="drillIp('${esc(x[0])}')">${esc(x[0])}</span></td>
+     <td>${fmtNum(x[1])}</td></tr>`).join('');
+  showDrillModal(`IPs from ${esc(city)} (${esc(cc)})`, `
+    <table class="table table-sm">
+      <thead><tr><th>#</th><th>IP</th><th>Requests</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`);
+}
+function _isMonthRange(from, to) {
+  if (!from || !to) return false;
+  if (from.slice(0, 4) !== to.slice(0, 4) || from.slice(5, 7) !== to.slice(5, 7)) return false;
+  if (from.slice(8) !== '01') return false;
+  const lastDay = new Date(parseInt(from.slice(0, 4)), parseInt(from.slice(5, 7)), 0).getDate();
+  return parseInt(to.slice(8)) === lastDay;
+}
+
+function populateYearButtons(fromDate, toDate) {
+  const currentYear = new Date().getFullYear();
+  const isFullYear = fromDate && toDate
+    && fromDate === fromDate.slice(0,4)+'-01-01'
+    && toDate   === toDate.slice(0,4)+'-12-31'
+    && fromDate.slice(0,4) === toDate.slice(0,4);
+  const isMonth = !isFullYear && _isMonthRange(fromDate, toDate);
+
+  const activeYear = isFullYear ? parseInt(fromDate.slice(0,4))
+                   : isMonth   ? parseInt(fromDate.slice(0,4))
+                   : null;
+  const activeMonth = isMonth ? parseInt(fromDate.slice(5,7)) : null;
+
+  if (activeYear) _selectedYear = activeYear;
+  else if (!isMonth) _selectedYear = null;
+
+  const container = document.getElementById('year-btns');
+  container.innerHTML = '';
+  const years = _availableYears.length ? _availableYears : [];
+  years.forEach(y => {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-arq-ghost' + (y === _selectedYear ? ' active' : '');
+    btn.textContent = y;
+    btn.onclick = () => selectYear(y);
+    container.appendChild(btn);
+  });
+  showYearlyDownloadBtn(isFullYear ? activeYear : null);
+  populateMonthButtons(_selectedYear, activeMonth);
+}
+
+function populateMonthButtons(year, activeMonth) {
+  const container = document.getElementById('month-btns');
+  if (!year) { container.style.display = 'none'; container.innerHTML = ''; return; }
+  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const now = new Date();
+  container.innerHTML = '';
+  names.forEach((name, i) => {
+    const m = i + 1;
+    if (year === now.getFullYear() && m > now.getMonth() + 1) return;
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-arq-ghost' + (m === activeMonth ? ' active' : '');
+    btn.dataset.month = m;
+    btn.textContent = name;
+    btn.onclick = () => selectMonth(year, m);
+    container.appendChild(btn);
+  });
+  container.style.display = container.children.length ? '' : 'none';
+}
+
+function selectYear(year) {
+  document.getElementById('from-date').value = `${year}-01-01`;
+  document.getElementById('to-date').value   = `${year}-12-31`;
+  _selectedYear = year;
+  showYearlyDownloadBtn(year);
+  populateMonthButtons(year, null);
+  applyDateRange();
+}
+
+function selectMonth(year, month) {
+  const mm = String(month).padStart(2, '0');
+  const lastDay = new Date(year, month, 0).getDate();
+  document.getElementById('from-date').value = `${year}-${mm}-01`;
+  document.getElementById('to-date').value   = `${year}-${mm}-${String(lastDay).padStart(2, '0')}`;
+  document.querySelectorAll('#month-btns .btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.month) === month));
+  showYearlyDownloadBtn(null);
+  applyDateRange();
+}
+
+function showYearlyDownloadBtn(year) {
+  const btn = document.getElementById('yearly-download-btn');
+  if (year) {
+    btn.style.display = '';
+    btn.dataset.year = year;
+  } else {
+    btn.style.display = 'none';
+    btn.dataset.year = '';
+  }
+}
+
+function downloadYearlyPdf(e) {
+  e.preventDefault();
+  const year = document.getElementById('yearly-download-btn').dataset.year || _selectedYear;
+  if (!year) return;
+  window.location.href = `/api/yearly/download?year=${year}&category=${_category}`;
+}
+
+// ── Logs panel ───────────────────────────────────────────────────────────────
+async function refreshLogs() {
+  const level = document.getElementById('log-level').value;
+  const r = await fetch('/api/logs' + (level ? '?level='+level : ''));
+  const d = await r.json();
+  const pre = document.getElementById('logs-pre');
+  pre.innerHTML = d.logs.map(l => {
+    const ts = new Date(l.ts*1000).toISOString().slice(11,19);
+    return `<span class="log-${l.level}">${ts}  ${l.level.padEnd(5)}  [${l.logger}]  ${esc(l.message)}</span>`;
+  }).join('\n');
+  if (document.getElementById('log-autoscroll').checked) pre.scrollTop = pre.scrollHeight;
+}
+
+// ── Controls ─────────────────────────────────────────────────────────────────
+async function refresh() {
+  showParsing('Starting re-parse…');
+  await fetch('/api/refresh', {method:'POST'});
+  _lastUpdated = null; setTimeout(poll, 500);
+}
+function validateDateRange() {
+  const from = document.getElementById('from-date').value;
+  const to   = document.getElementById('to-date').value;
+  const err  = document.getElementById('date-range-error');
+  const invalid = from && to && from > to;
+  err.style.display = invalid ? '' : 'none';
+  document.getElementById('from-date').classList.toggle('is-invalid', !!invalid);
+  document.getElementById('to-date').classList.toggle('is-invalid', !!invalid);
+  return !invalid;
+}
+
+async function applyDateRange() {
+  const from = document.getElementById('from-date').value;
+  const to   = document.getElementById('to-date').value;
+  if (!from || !to) return;
+  if (!validateDateRange()) return;
+  await loadStats(from, to);
+}
+function switchCategory(cat) {
+  _category = cat;
+  document.querySelectorAll('.category-tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.cat === cat));
+  const from = document.getElementById('from-date').value;
+  const to   = document.getElementById('to-date').value;
+  loadStats(from || null, to || null);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('path-search').addEventListener('input', () => { _pathPage=50; renderPathTable(); });
+  document.getElementById('log-level').addEventListener('change', refreshLogs);
+  document.querySelectorAll('.category-tab').forEach(b =>
+    b.addEventListener('click', () => switchCategory(b.dataset.cat)));
+  poll();
+});
+</script>
+</body>
+</html>

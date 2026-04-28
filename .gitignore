@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# DuckDB
+data/*.duckdb
+data/*.duckdb.wal
+
+# Cache
+cache/
+
+# Log files (sample data dirs are test fixtures — keep httpd/ and httpd2/)
+*.log
+*.log.*
+
+# GeoIP databases (large binary/archive files)
+geoip/*.mmdb
+geoip/*.tar.gz
+geoip/GeoLite2-City_*/
+
+# Ansible
+.ansible/
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

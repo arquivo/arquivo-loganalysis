@@ -1,0 +1,9 @@
+flask>=3.0
+python-dateutil>=2.9
+gunicorn>=21.2
+watchdog>=4.0
+geoip2>=4.8
+duckdb>=1.1
+behave>=1.2.6
+pytest>=8.0
+weasyprint>=60.0

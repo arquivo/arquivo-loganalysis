@@ -1,0 +1,22 @@
+services:
+  apache-log-analyser:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./httpd:/app/httpd:ro
+      - ./data:/app/data               # DuckDB analytics store (3-year retention)
+      - ./geoip:/app/geoip:ro          # optional GeoLite2-City.mmdb
+    environment:
+      - LOG_DIR=/app/httpd
+      - WINDOW_DAYS=30
+      - RETENTION_DAYS=1095
+      - DB_PATH=/app/data/analytics.duckdb
+      - LOG_LEVEL=INFO
+      - GEOIP_DB=/app/geoip/GeoLite2-City.mmdb
+      - PARSE_NICE=10
+      # PARSE_WORKERS defaults to os.cpu_count(); set here to override
+      - PARSE_WORKERS=16
+      # GUNICORN_THREADS defaults to cpu_count*2+1; set here to override
+      # GUNICORN_THREADS=8
+    restart: unless-stopped
