@@ -46,12 +46,6 @@ def _run_parse(from_date=None, to_date=None):
             _state['message'] = f'Parsing… {_state["progress"]}%'
 
     try:
-        with _lock:
-            _state['status'] = 'parsing'
-            _state['message'] = 'Parsing logs…'
-            _state['from_date'] = from_date
-            _state['to_date'] = to_date
-
         _log.info('Parse thread starting (from=%s, to=%s)', from_date, to_date)
         # parse_logs now handles ingest + DB writes; result is only used for
         # metadata (files_parsed, duration_s, etc.) — charts query DB directly.
@@ -71,12 +65,38 @@ def _run_parse(from_date=None, to_date=None):
             _state['message'] = str(exc)
 
 
-def start_parsing(from_date=None, to_date=None):
+def start_parsing(from_date=None, to_date=None, force=False):
     with _lock:
         if _state['status'] == 'parsing':
             _log.debug('Parse already in progress; ignoring start request')
             return
-        _state['status'] = 'idle'
+
+    # Fast-path: when no custom range is requested and the ledger already
+    # covers every file on disk, skip the parse thread entirely. The dashboard
+    # endpoints query DuckDB directly on demand, so we don't need to "parse"
+    # just to surface existing data — that was the UX bug where every Docker
+    # restart looked like a full re-ingest.
+    if not force and from_date is None and to_date is None:
+        try:
+            from app.ingestor import has_pending_work
+            if not has_pending_work(LOG_DIR):
+                with _lock:
+                    _state['status'] = 'done'
+                    _state['progress'] = 100.0
+                    _state['message'] = 'Up to date — no parsing needed'
+                    if _state['last_updated'] is None:
+                        _state['last_updated'] = time.time()
+                _log.info('Ledger covers every file in %s; skipping parse', LOG_DIR)
+                return
+        except Exception:
+            _log.exception('Pending-work check failed; falling back to full parse')
+
+    with _lock:
+        _state['status'] = 'parsing'  # hold the slot before releasing the lock
+        _state['progress'] = 0.0
+        _state['message'] = 'Parsing logs…'
+        _state['from_date'] = from_date
+        _state['to_date'] = to_date
     threading.Thread(target=_run_parse, args=(from_date, to_date), daemon=True).start()
 
 
@@ -512,10 +532,10 @@ def api_refresh():
     from_date = data.get('from_date') or request.args.get('from_date')
     to_date = data.get('to_date') or request.args.get('to_date')
     with _lock:
-        _state['status'] = 'idle'
-        _state['progress'] = 0
-        _state['from_date'] = from_date
-        _state['to_date'] = to_date
+        if _state['status'] == 'parsing':
+            _log.debug('Refresh requested but parse already in progress; ignoring')
+            return jsonify({'status': 'already parsing',
+                            'from_date': from_date, 'to_date': to_date}), 409
     _log.info('Manual refresh requested (from=%s, to=%s)', from_date, to_date)
     start_parsing(from_date=from_date, to_date=to_date)
     return jsonify({'status': 'parsing started',

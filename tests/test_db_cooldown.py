@@ -71,3 +71,42 @@ class TestIsFileCurrent:
         db._REPARSE_COOLDOWN_S = 0
         self._ingest('live.log', 1000.0, 100)
         assert db.is_file_current('live.log', 1001.0, 200) is False
+
+
+class TestFetchLedgerMap:
+    def _ingest(self, source, mtime, size):
+        with db.cursor() as c:
+            c.execute(
+                """INSERT OR REPLACE INTO parsed_files
+                   (source, path, mtime, size, ingested_at, rows_ingested, duration_s)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 0, 0.0)""",
+                [source, '/fake/' + source, mtime, size],
+            )
+
+    def test_empty_input_returns_empty_dict(self):
+        assert db.fetch_ledger_map([]) == {}
+
+    def test_unknown_sources_omitted(self):
+        self._ingest('seen.log', 1000.0, 512)
+        m = db.fetch_ledger_map(['seen.log', 'never.log'])
+        assert set(m.keys()) == {'seen.log'}
+        assert m['seen.log'][0] == 1000.0
+        assert m['seen.log'][1] == 512
+
+    def test_multiple_hits_returned_together(self):
+        self._ingest('a.log', 100.0, 1)
+        self._ingest('b.log', 200.0, 2)
+        self._ingest('c.log', 300.0, 3)
+        m = db.fetch_ledger_map(['a.log', 'b.log', 'c.log'])
+        assert {s: (mt, sz) for s, (mt, sz, _) in m.items()} == {
+            'a.log': (100.0, 1), 'b.log': (200.0, 2), 'c.log': (300.0, 3),
+        }
+
+    def test_matches_per_file_decision(self):
+        """fetch_ledger_map + _ledger_means_current must match is_file_current."""
+        db._REPARSE_COOLDOWN_S = 0
+        self._ingest('match.log', 1000.0, 100)
+        m = db.fetch_ledger_map(['match.log', 'missing.log'])
+        assert db._ledger_means_current(m.get('match.log'), 1000.0, 100) is True
+        assert db._ledger_means_current(m.get('match.log'), 1001.0, 200) is False
+        assert db._ledger_means_current(m.get('missing.log'), 1.0, 1) is False

@@ -179,3 +179,9 @@ Feature: Apache log parsing
     Given a plain log file with 4 requests and a tar.gz archive with 3 requests in the same directory
     When I parse the log directory with progress tracking
     Then the maximum reported progress does not exceed 100 percent
+
+  Scenario: Startup skips re-parsing when the ledger already covers every file
+    Given a sample log file that has already been parsed
+    When start_parsing is invoked while the ledger is up to date
+    Then the parse status is "done" without ever entering the "parsing" state
+    And the status message indicates no parsing was needed

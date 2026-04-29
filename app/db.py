@@ -188,6 +188,20 @@ def _init_schema(conn: duckdb.DuckDBPyConnection) -> None:
 _REPARSE_COOLDOWN_S = int(os.environ.get('REPARSE_COOLDOWN', '300'))  # seconds
 
 
+def _ledger_means_current(row, mtime: float, size: int) -> bool:
+    """Decide whether a ledger row (mtime, size, ingested_epoch) implies the
+    file is current relative to (mtime, size) on disk."""
+    if not row:
+        return False
+    stored_mtime, stored_size, ingested_epoch = row
+    if abs(stored_mtime - mtime) < 0.001 and stored_size == size:
+        return True
+    if _REPARSE_COOLDOWN_S > 0 and ingested_epoch is not None:
+        if (time.time() - ingested_epoch) < _REPARSE_COOLDOWN_S:
+            return True
+    return False
+
+
 def is_file_current(source: str, mtime: float, size: int) -> bool:
     """True if the file should be skipped.
 
@@ -201,15 +215,24 @@ def is_file_current(source: str, mtime: float, size: int) -> bool:
             "SELECT mtime, size, epoch(ingested_at) FROM parsed_files WHERE source = ?",
             [source],
         ).fetchone()
-    if not row:
-        return False
-    stored_mtime, stored_size, ingested_epoch = row
-    if abs(stored_mtime - mtime) < 0.001 and stored_size == size:
-        return True
-    if _REPARSE_COOLDOWN_S > 0 and ingested_epoch is not None:
-        if (time.time() - ingested_epoch) < _REPARSE_COOLDOWN_S:
-            return True
-    return False
+    return _ledger_means_current(row, mtime, size)
+
+
+def fetch_ledger_map(sources: list[str]) -> dict[str, tuple]:
+    """Return ``{source: (mtime, size, ingested_epoch)}`` for the given sources
+    in a single query. Combine with ``_ledger_means_current`` to skip N round
+    trips when scanning a directory.
+    """
+    if not sources:
+        return {}
+    placeholders = ','.join(['?'] * len(sources))
+    with cursor() as c:
+        rows = c.execute(
+            f"SELECT source, mtime, size, epoch(ingested_at) FROM parsed_files "
+            f"WHERE source IN ({placeholders})",
+            sources,
+        ).fetchall()
+    return {r[0]: (r[1], r[2], r[3]) for r in rows}
 
 
 def delete_source(source: str) -> None:
@@ -242,6 +265,9 @@ def _inject_source(table: str, source: str, row: tuple) -> tuple:
 
 
 
+_INSERT_CHUNK = 1000  # rows per multi-VALUES INSERT; ~2× faster than executemany
+
+
 def replace_file_rollups(source: str, path: str, mtime: float, size: int,
                          tables: dict, rows: int, duration_s: float) -> None:
     """Delete all existing rows for source and insert new ones in one transaction."""
@@ -254,9 +280,13 @@ def replace_file_rollups(source: str, path: str, mtime: float, size: int,
             for name, row_list in tables.items():
                 if not row_list:
                     continue
-                placeholders = ', '.join(['?'] * (len(row_list[0]) + 1))
-                sql = f"INSERT INTO {name} VALUES ({placeholders})"
-                c.executemany(sql, [_inject_source(name, source, r) for r in row_list])
+                injected = [_inject_source(name, source, r) for r in row_list]
+                row_ph = '(' + ','.join(['?'] * len(injected[0])) + ')'
+                for i in range(0, len(injected), _INSERT_CHUNK):
+                    chunk = injected[i:i + _INSERT_CHUNK]
+                    sql = f"INSERT INTO {name} VALUES " + ','.join([row_ph] * len(chunk))
+                    flat = [v for r in chunk for v in r]
+                    c.execute(sql, flat)
             c.execute(
                 """INSERT INTO parsed_files
                    (source, path, mtime, size, ingested_at, rows_ingested, duration_s)
@@ -274,29 +304,22 @@ def replace_file_rollups(source: str, path: str, mtime: float, size: int,
 
 
 def enforce_retention(days: int = None) -> int:
-    """Delete rows older than the retention window."""
+    """Delete rows older than the retention window. Returns 0 — DuckDB doesn't
+    expose a delete row count without materializing the rows, and the value
+    was only ever used for the log line."""
     days = days or RETENTION_DAYS
-    deleted = 0
     with cursor() as c:
         for t in ('daily_totals', 'daily_paths', 'daily_ips', 'daily_status',
                   'daily_methods', 'daily_ua', 'daily_referers',
                   'daily_ip_paths', 'daily_path_ips'):
-            n = c.execute(
-                f"SELECT COUNT(*) FROM {t} WHERE day < current_date - INTERVAL '{days} days'"
-            ).fetchone()[0]
-            deleted += n
             c.execute(
                 f"DELETE FROM {t} WHERE day < current_date - INTERVAL '{days} days'"
             )
-        n = c.execute(
-            f"SELECT COUNT(*) FROM hourly_totals WHERE hour < now() - INTERVAL '{days} days'"
-        ).fetchone()[0]
-        deleted += n
         c.execute(
             f"DELETE FROM hourly_totals WHERE hour < now() - INTERVAL '{days} days'"
         )
-    _log.info('Retention: deleted %d rows older than %d days', deleted, days)
-    return deleted
+    _log.info('Retention: rows older than %d days deleted', days)
+    return 0
 
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
@@ -321,19 +344,14 @@ def query_stats(category: str, from_date: str, to_date: str) -> dict:
             [category, from_date, to_date]
         ).fetchone()[0]
 
-        top_paths = c.execute(
-            """SELECT path, SUM(count) AS n FROM daily_paths
-               WHERE category = ? AND day BETWEEN ? AND ?
-               GROUP BY path ORDER BY n DESC LIMIT 10""",
-            [category, from_date, to_date]
-        ).fetchall()
-
+        # Single LIMIT 1000 scan; top_paths is just the first 10.
         all_paths = c.execute(
             """SELECT path, SUM(count) AS n FROM daily_paths
                WHERE category = ? AND day BETWEEN ? AND ?
                GROUP BY path ORDER BY n DESC LIMIT 1000""",
             [category, from_date, to_date]
         ).fetchall()
+        top_paths = all_paths[:10]
 
         top_ips = c.execute(
             """SELECT ip, SUM(count) AS n,
@@ -535,7 +553,7 @@ def drill_subnets(category: str, from_date: str, to_date: str,
         rows = c.execute(
             """WITH subnet_counts AS (
                    SELECT
-                       regexp_replace(ip, '\\.[0-9]+$', '') AS ip_prefix,
+                       array_to_string(str_split(ip, '.')[1:3], '.') AS ip_prefix,
                        SUM(count) AS n
                    FROM daily_ips
                    WHERE category = ? AND day BETWEEN ? AND ?

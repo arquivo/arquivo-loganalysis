@@ -31,6 +31,45 @@ from app.parser import (
 _log = logging.getLogger('ingestor')
 
 
+_SKIP_SUFFIXES = {'.duckdb', '.wal', '.db', '.json', '.bz2', '.zip'}
+
+
+def _classify_files(log_dir: str) -> tuple[list[Path], list[Path]]:
+    """Split a directory's files into (plain_logs, tar_gz_archives), applying
+    the same suffix blocklist used by ingest. Shared between ingest_dir and
+    has_pending_work so both see the same candidate set."""
+    archives: list[Path] = []
+    plain: list[Path] = []
+    for p in sorted(Path(log_dir).iterdir()):
+        if not p.is_file():
+            continue
+        suffixes = [s.lower() for s in p.suffixes]
+        if len(suffixes) >= 2 and suffixes[-2] == '.tar' and suffixes[-1] == '.gz':
+            archives.append(p)
+        elif p.suffix.lower() not in _SKIP_SUFFIXES:
+            plain.append(p)
+    return plain, archives
+
+
+def has_pending_work(log_dir: str) -> bool:
+    """Return True if any file in `log_dir` is new or changed relative to the
+    parsed_files ledger. Cheap: filesystem stats + one ledger query, no parsing
+    and no rollup queries. Used by the Flask app to skip start_parsing on
+    startup when nothing has changed."""
+    if not os.path.isdir(log_dir):
+        return False
+    plain, archives = _classify_files(log_dir)
+    sources = [f.name for f in plain] + [a.name for a in archives]
+    if not sources:
+        return False
+    ledger_map = db.fetch_ledger_map(sources)
+    for f in (*plain, *archives):
+        st = f.stat()
+        if not db._ledger_means_current(ledger_map.get(f.name), st.st_mtime, st.st_size):
+            return True
+    return False
+
+
 def ingest_dir(log_dir: str, from_dt: datetime, to_dt: datetime,
                workers: int = None, progress_cb=None) -> dict:
     """Ingest every new or changed file in `log_dir`. No date-window filtering
@@ -38,27 +77,19 @@ def ingest_dir(log_dir: str, from_dt: datetime, to_dt: datetime,
     window is enforced only at query time."""
     t0 = time.time()
 
-    _SKIP_SUFFIXES = {'.duckdb', '.wal', '.db', '.json', '.bz2', '.zip'}
+    all_files, archive_files = _classify_files(log_dir)
 
-    # Separate .tar.gz archives from plain files.  A file whose last two
-    # suffixes are ['.tar', '.gz'] is an archive; everything else that passes
-    # the suffix blocklist is a plain text log.
-    all_candidates = sorted(p for p in Path(log_dir).iterdir() if p.is_file())
-    archive_files: list[Path] = []
-    all_files: list[Path] = []
-    for p in all_candidates:
-        suffixes = [s.lower() for s in p.suffixes]
-        if len(suffixes) >= 2 and suffixes[-2] == '.tar' and suffixes[-1] == '.gz':
-            archive_files.append(p)
-        elif p.suffix.lower() not in _SKIP_SUFFIXES:
-            all_files.append(p)
+    # One ledger query covering plain files AND archive sentinel keys, so the
+    # per-file/per-archive checks below are pure in-memory comparisons.
+    all_sources = [f.name for f in all_files] + [a.name for a in archive_files]
+    ledger_map = db.fetch_ledger_map(all_sources)
 
     todo: list[Path] = []
     unchanged: list[str] = []
     for f in all_files:
         src = f.name
         st = f.stat()
-        if db.is_file_current(src, st.st_mtime, st.st_size):
+        if db._ledger_means_current(ledger_map.get(src), st.st_mtime, st.st_size):
             unchanged.append(src)
         else:
             todo.append(f)
@@ -94,7 +125,8 @@ def ingest_dir(log_dir: str, from_dt: datetime, to_dt: datetime,
     for arc in sorted(archive_files):
         arc_st = arc.stat()
         arc_source_prefix = arc.name  # e.g. "access.tar.gz" — used as ledger sentinel key
-        if db.is_file_current(arc_source_prefix, arc_st.st_mtime, arc_st.st_size):
+        if db._ledger_means_current(ledger_map.get(arc_source_prefix),
+                                    arc_st.st_mtime, arc_st.st_size):
             unchanged.append(arc_source_prefix)
             _log.info('  unchanged archive (ledger hit): %s', arc_source_prefix)
             continue

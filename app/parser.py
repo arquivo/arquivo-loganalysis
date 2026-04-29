@@ -147,6 +147,9 @@ def _parse_file_for_db(args):
     bytes_read = 0
     rows_total = 0
     _today = datetime.now().strftime('%Y-%m-%d')
+    # UA cache: log files have heavy UA repetition (same client hammers an
+    # endpoint), so memoizing skips the regex on every line after the first.
+    _bot_memo: dict[str, bool] = {}
 
     def _open():
         if file_path.lower().endswith('.gz'):
@@ -180,7 +183,10 @@ def _parse_file_for_db(args):
 
                 day = dt.strftime('%Y-%m-%d')
                 hour = dt.strftime('%Y-%m-%d %H:00:00')
-                bot = is_bot(ua)
+                bot = _bot_memo.get(ua)
+                if bot is None:
+                    bot = is_bot(ua)
+                    _bot_memo[ua] = bot
                 cat = 'bot' if bot else 'human'
                 rows_total += 1
 

@@ -1006,3 +1006,49 @@ def step_then_total_request_count(context, n):
         f"files_parsed={context.result.get('files_parsed')}, "
         f"files_skipped={context.result.get('files_skipped')}"
     )
+
+
+# ── Startup short-circuit ─────────────────────────────────────────────────────
+
+@when('start_parsing is invoked while the ledger is up to date')
+def step_when_start_parsing_ledger_current(context):
+    import app.app as app_module
+    from app import db as db_module
+
+    db_path = os.path.join(context.tmpdir, 'startup_test.duckdb')
+    app_module.LOG_DIR = context.log_dir
+    app_module.DB_PATH = db_path
+    os.environ['DB_PATH'] = db_path
+    db_module.connect(db_path)
+
+    # Re-seed the ledger against the test DB path (the @given step parsed against
+    # a different db_path derived from log_dir).
+    parse_logs(context.log_dir, days=30, db_path=db_path)
+
+    with app_module._lock:
+        app_module._state['status'] = 'idle'
+        app_module._state['progress'] = 0.0
+        app_module._state['message'] = ''
+        app_module._state['last_updated'] = None
+
+    app_module.start_parsing()
+    # Capture state synchronously: if start_parsing took the slow path it would
+    # have set status='parsing' and spawned a thread before returning.
+    with app_module._lock:
+        context.status_after_start = app_module._state['status']
+        context.message_after_start = app_module._state['message']
+
+
+@then('the parse status is "done" without ever entering the "parsing" state')
+def step_then_parse_status_done_no_parsing(context):
+    assert context.status_after_start == 'done', (
+        f"expected status='done' (short-circuit), got {context.status_after_start!r}"
+    )
+
+
+@then('the status message indicates no parsing was needed')
+def step_then_status_message_skipped(context):
+    msg = (context.message_after_start or '').lower()
+    assert 'up to date' in msg or 'no parse' in msg or 'skip' in msg, (
+        f"expected a 'no parsing needed' message, got {context.message_after_start!r}"
+    )

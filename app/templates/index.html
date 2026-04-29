@@ -91,6 +91,25 @@
                       padding: 6px 16px; font-size: .82rem; align-items: center; gap: 10px; }
     #parsing-banner .spinner-border { width: 1rem; height: 1rem; border-width: 2px; }
 
+    /* Slow-query indicator */
+    #query-indicator.d-flex { display: inline-flex !important; }
+    .controls-busy { opacity: .55; transition: opacity .12s ease-in; }
+    .controls-busy > *:not(#yearly-download-btn) { pointer-events: none; }
+    .controls-busy > #yearly-download-btn { opacity: 1; }
+
+    /* Slow-query fullscreen overlay (separate from #loading-overlay so the
+       /api/status poll loop can't overwrite its message). */
+    #query-overlay { position: fixed; inset: 0; background: rgba(255,255,255,.75);
+                     z-index: 9998; display: none; align-items: center;
+                     justify-content: center; backdrop-filter: blur(2px); }
+    #query-overlay.show { display: flex; }
+    #query-overlay .box { background: #fff; border: 1px solid #e3e8ef;
+                          border-radius: 8px; padding: 1.25rem 1.75rem;
+                          box-shadow: 0 8px 32px rgba(0,0,0,.12);
+                          display: flex; align-items: center; gap: .9rem; }
+    #query-overlay .spinner-border { color: var(--arq-blue); width: 1.6rem; height: 1.6rem; }
+    #query-overlay .msg { color: var(--arq-dark); font-weight: 500; }
+
     /* Logs panel */
     #logs-panel pre { background: #0b1b2b; color: #d4d4d4; border-radius: 4px;
                       padding: .8rem; font-size: .78rem; max-height: 400px; overflow: auto;
@@ -153,6 +172,10 @@
           <input type="date" id="to-date"   class="form-control form-control-sm" style="width:140px" oninput="validateDateRange()">
           <button class="btn-arq" onclick="applyDateRange()">Apply</button>
           <span id="date-range-error" class="text-warning fw-semibold" style="display:none;font-size:.8rem">⚠ from must be before to</span>
+          <span id="query-indicator" class="d-none align-items-center gap-2 text-light" style="font-size:.8rem" aria-live="polite">
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            <span>Loading…</span>
+          </span>
         </div>
         <small class="text-light" id="nav-window"></small>
         <small class="text-light" id="nav-updated"></small>
@@ -424,23 +447,58 @@ function flashLiveBadge() {
   setTimeout(() => { b.classList.replace('bg-warning','bg-success'); b.textContent='LIVE'; }, 3000);
   document.getElementById('nav-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
+// ── Query indicator (debounced, counter-based) ─────────────────────────
+let _queryInflight = 0;
+let _queryShowTimer = null;
+
+function _queryToolbars() {
+  const tb = document.getElementById('year-btns')?.parentElement;
+  const cats = document.querySelector('.category-tab')?.parentElement;
+  return [tb, cats].filter(Boolean);
+}
+function showQueryIndicator() {
+  _queryInflight++;
+  if (_queryShowTimer || _queryInflight !== 1) return;
+  // Debounce: fast responses (most of them) never show the indicator.
+  _queryShowTimer = setTimeout(() => {
+    const ind = document.getElementById('query-indicator');
+    if (ind) { ind.classList.remove('d-none'); ind.classList.add('d-flex'); }
+    _queryToolbars().forEach(el => el.classList.add('controls-busy'));
+    document.getElementById('main')?.setAttribute('aria-busy', 'true');
+  }, 200);
+}
+function hideQueryIndicator() {
+  _queryInflight = Math.max(0, _queryInflight - 1);
+  if (_queryInflight > 0) return;
+  if (_queryShowTimer) { clearTimeout(_queryShowTimer); _queryShowTimer = null; }
+  const ind = document.getElementById('query-indicator');
+  if (ind) { ind.classList.add('d-none'); ind.classList.remove('d-flex'); }
+  _queryToolbars().forEach(el => el.classList.remove('controls-busy'));
+  document.getElementById('main')?.removeAttribute('aria-busy');
+}
+
 async function loadStats(fromDate, toDate) {
-  let url = '/api/stats?category=' + _category;
-  if (fromDate && toDate) url += `&from_date=${fromDate}&to_date=${toDate}`;
-  const [statsRes, yearsRes] = await Promise.all([
-    fetch(url),
-    fetch('/api/years?category=' + _category),
-  ]);
-  if (!statsRes.ok) return;
-  _stats = await statsRes.json();
-  if (yearsRes.ok) {
-    const yd = await yearsRes.json();
-    _availableYears = yd.years || [];
+  showQueryIndicator();
+  try {
+    let url = '/api/stats?category=' + _category;
+    if (fromDate && toDate) url += `&from_date=${fromDate}&to_date=${toDate}`;
+    const [statsRes, yearsRes] = await Promise.all([
+      fetch(url),
+      fetch('/api/years?category=' + _category),
+    ]);
+    if (!statsRes.ok) return;
+    _stats = await statsRes.json();
+    if (yearsRes.ok) {
+      const yd = await yearsRes.json();
+      _availableYears = yd.years || [];
+    }
+    render(_stats);
+    document.getElementById('loading-overlay').style.display = 'none';
+    document.getElementById('main').style.display = 'block';
+    refreshLogs();
+  } finally {
+    hideQueryIndicator();
   }
-  render(_stats);
-  document.getElementById('loading-overlay').style.display = 'none';
-  document.getElementById('main').style.display = 'block';
-  refreshLogs();
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -733,8 +791,9 @@ async function refreshLogs() {
 
 // ── Controls ─────────────────────────────────────────────────────────────────
 async function refresh() {
+  const r = await fetch('/api/refresh', {method:'POST'});
+  if (r.status === 409) return;  // already parsing — do nothing
   showParsing('Starting re-parse…');
-  await fetch('/api/refresh', {method:'POST'});
   _lastUpdated = null; setTimeout(poll, 500);
 }
 function validateDateRange() {
