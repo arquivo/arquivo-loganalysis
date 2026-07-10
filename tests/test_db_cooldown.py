@@ -110,3 +110,22 @@ class TestFetchLedgerMap:
         assert db._ledger_means_current(m.get('match.log'), 1000.0, 100) is True
         assert db._ledger_means_current(m.get('match.log'), 1001.0, 200) is False
         assert db._ledger_means_current(m.get('missing.log'), 1.0, 1) is False
+
+
+class TestMarkFileIngested:
+    """Regression test: mark_file_ingested's INSERT ... ON CONFLICT DO UPDATE
+    must actually succeed against real DuckDB (a bare CURRENT_TIMESTAMP in the
+    DO UPDATE SET clause used to raise a Binder Error on every call, so archive
+    sentinels were silently never written and every archive was re-extracted
+    and re-parsed on every ingest cycle)."""
+
+    def test_first_write_is_recorded(self):
+        db.mark_file_ingested('arc.tar.gz', '/logs/arc.tar.gz', 1000.0, 500)
+        assert db.is_file_current('arc.tar.gz', 1000.0, 500) is True
+
+    def test_repeated_write_updates_ledger_and_stays_current(self):
+        db._REPARSE_COOLDOWN_S = 0
+        db.mark_file_ingested('arc.tar.gz', '/logs/arc.tar.gz', 1000.0, 500)
+        db.mark_file_ingested('arc.tar.gz', '/logs/arc.tar.gz', 2000.0, 600)
+        assert db.is_file_current('arc.tar.gz', 2000.0, 600) is True
+        assert db.is_file_current('arc.tar.gz', 1000.0, 500) is False

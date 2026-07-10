@@ -657,7 +657,7 @@ def mark_file_ingested(source: str, path: str, mtime: float, size: int) -> None:
                    path = excluded.path,
                    mtime = excluded.mtime,
                    size = excluded.size,
-                   ingested_at = CURRENT_TIMESTAMP""",
+                   ingested_at = now()""",
             [source, path, mtime, size],
         )
 
